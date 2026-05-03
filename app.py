@@ -1,17 +1,15 @@
 import streamlit as st
 import re
-import tempfile
-import os
+import io
 
 from langchain_core.documents import Document as LCDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
-from langchain_community.document_loaders import PyPDFLoader
 from docx import Document
+from pypdf import PdfReader
 
-# ── Optional OCR (works if tesseract is installed via packages.txt) ──
+# ── Optional OCR ──
 try:
     import pytesseract
     from PIL import Image
@@ -27,15 +25,12 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Inter:wght@300;400;500&display=swap');
 
-/* ── Base ── */
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
 .stApp {
     background: #07060f;
     color: #e8e6f0;
 }
-
-/* ── Animated mesh background ── */
 .stApp::before {
     content: '';
     position: fixed;
@@ -47,8 +42,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     pointer-events: none;
     z-index: 0;
 }
-
-/* ── Title ── */
 h1 {
     font-family: 'Syne', sans-serif !important;
     font-size: 3rem !important;
@@ -62,7 +55,6 @@ h1 {
     margin-bottom: 0.2rem !important;
     padding-top: 1.5rem;
 }
-
 .subtitle {
     text-align: center;
     color: #7c6fa0;
@@ -70,13 +62,10 @@ h1 {
     margin-bottom: 2rem;
     letter-spacing: 0.04em;
 }
-
-/* ── Sidebar ── */
 section[data-testid="stSidebar"] {
     background: #0e0b1a !important;
     border-right: 1px solid #1e1530;
 }
-
 section[data-testid="stSidebar"] * { color: #c8bfe0 !important; }
 section[data-testid="stSidebar"] h1,
 section[data-testid="stSidebar"] h2,
@@ -84,19 +73,11 @@ section[data-testid="stSidebar"] h3 {
     color: #ffffff !important;
     font-family: 'Syne', sans-serif !important;
 }
-
-/* ── File uploader ── */
 [data-testid="stFileUploader"] {
     border: 1.5px dashed #3d2b6b !important;
     border-radius: 14px !important;
     background: rgba(61,43,107,0.12) !important;
-    transition: border-color 0.3s;
 }
-[data-testid="stFileUploader"]:hover {
-    border-color: #8b5cf6 !important;
-}
-
-/* ── Text input ── */
 .stTextInput input {
     background: #110e1f !important;
     color: #e8e6f0 !important;
@@ -111,11 +92,8 @@ section[data-testid="stSidebar"] h3 {
     box-shadow: 0 0 0 3px rgba(124,58,237,0.18) !important;
 }
 .stTextInput label { color: #9d86c8 !important; font-size: 0.85rem !important; }
-
-/* ── Slider ── */
 .stSlider label { color: #9d86c8 !important; }
 
-/* ── Answer cards ── */
 .answer-card {
     background: linear-gradient(145deg, #130f24, #1a1330);
     border: 1px solid #2a1f4a;
@@ -140,7 +118,6 @@ section[data-testid="stSidebar"] h3 {
     transform: translateY(-3px);
     box-shadow: 0 12px 40px rgba(124,58,237,0.2);
 }
-
 @keyframes cardIn {
     from { opacity: 0; transform: translateY(16px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -149,7 +126,6 @@ section[data-testid="stSidebar"] h3 {
     0%   { background-position: 200% 0; }
     100% { background-position: -200% 0; }
 }
-
 .card-label {
     font-family: 'Syne', sans-serif;
     font-size: 0.7rem;
@@ -164,8 +140,6 @@ section[data-testid="stSidebar"] h3 {
     line-height: 1.85;
     color: #ccc4e0;
 }
-
-/* ── Highlight ── */
 .hl {
     background: linear-gradient(90deg, rgba(124,58,237,0.35), rgba(168,85,247,0.25));
     border-radius: 4px;
@@ -173,26 +147,13 @@ section[data-testid="stSidebar"] h3 {
     color: #e0d4ff;
     font-weight: 500;
 }
-
-/* ── Status messages ── */
-.stSuccess, .stInfo, .stWarning, .stError {
-    border-radius: 12px !important;
-}
-
-/* ── Empty state ── */
 .empty-state {
     text-align: center;
     padding: 4rem 2rem;
     color: #3d3060;
 }
 .empty-state .icon { font-size: 3.5rem; margin-bottom: 1rem; }
-.empty-state p { font-size: 1rem; }
-
-/* ── Divider ── */
 hr { border-color: #1e1530 !important; margin: 1.5rem 0 !important; }
-
-/* ── Spinner ── */
-.stSpinner > div { border-top-color: #7c3aed !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -210,94 +171,96 @@ with st.sidebar:
     files = st.file_uploader(
         "Upload PDFs or DOCX files",
         type=accepted,
-        accept_multiple_files=True,
-        help="Images supported only when Tesseract OCR is installed."
+        accept_multiple_files=True
     )
     st.divider()
     st.markdown("### ⚙️ Settings")
     top_k = st.slider("Results to show", 1, 10, 3)
-    st.divider()
-    if not OCR_AVAILABLE:
-        st.info("💡 Image OCR unavailable.\nAdd `tesseract-ocr` to `packages.txt` to enable it.", icon="ℹ️")
 
 # ── Extractors ──
-def extract_docx(file):
-    doc = Document(file)
-    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-
-def extract_image(file):
-    img = Image.open(file)
-    return pytesseract.image_to_string(img)
-
-def load_files(files):
+def extract_pdf(file) -> list[LCDocument]:
+    """Read PDF directly in memory — no temp file needed."""
+    reader = PdfReader(io.BytesIO(file.read()))
     docs = []
-    for file in files:
-        ext = file.name.rsplit(".", 1)[-1].lower()
-        try:
-            if ext == "pdf":
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(file.read())
-                    tmp_path = tmp.name
-                loader = PyPDFLoader(tmp_path)
-                for d in loader.load():
-                    if d.page_content.strip():
-                        docs.append(d)
-                os.unlink(tmp_path)
-
-            elif ext == "docx":
-                text = extract_docx(file)
-                if text.strip():
-                    docs.append(LCDocument(page_content=text, metadata={"source": file.name}))
-
-            elif ext in ["png", "jpg", "jpeg"] and OCR_AVAILABLE:
-                text = extract_image(file)
-                if text.strip():
-                    docs.append(LCDocument(page_content=text, metadata={"source": file.name}))
-
-        except Exception as e:
-            st.warning(f"Could not process **{file.name}**: {e}")
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        if text.strip():
+            docs.append(LCDocument(
+                page_content=text,
+                metadata={"source": file.name, "page": i + 1}
+            ))
     return docs
 
+def extract_docx(file) -> list[LCDocument]:
+    doc = Document(file)
+    text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    if text.strip():
+        return [LCDocument(page_content=text, metadata={"source": file.name})]
+    return []
+
+def extract_image(file) -> list[LCDocument]:
+    img = Image.open(file)
+    text = pytesseract.image_to_string(img)
+    if text.strip():
+        return [LCDocument(page_content=text, metadata={"source": file.name})]
+    return []
+
 def highlight_query(text, query):
-    words = re.findall(r'\w+', query)
-    for word in words:
-        text = re.sub(
-            rf'(?i)({re.escape(word)})',
-            r'<span class="hl">\1</span>',
-            text
-        )
+    for word in re.findall(r'\w+', query):
+        text = re.sub(rf'(?i)({re.escape(word)})', r'<span class="hl">\1</span>', text)
     return text
 
 # ── Session state ──
-if "db" not in st.session_state:
-    st.session_state.db = None
-if "last_file_names" not in st.session_state:
-    st.session_state.last_file_names = []
+for key in ["db", "last_file_names"]:
+    if key not in st.session_state:
+        st.session_state[key] = None if key == "db" else []
 
-# ── Build / rebuild index ──
+# ── Detect file changes → reset index ──
 current_names = sorted([f.name for f in files]) if files else []
-if files and current_names != st.session_state.last_file_names:
+if current_names != st.session_state.last_file_names:
     st.session_state.db = None
     st.session_state.last_file_names = current_names
 
+# ── Build index ──
 if files and st.session_state.db is None:
-    with st.spinner("Indexing documents…"):
-        raw_docs = load_files(files)
-        if not raw_docs:
-            st.error("No readable text found in the uploaded files.")
-            st.stop()
+    progress = st.progress(0, text="Reading files…")
+    raw_docs = []
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            separators=["\n\n", "\n", ". ", "? ", "! ", " "]
-        )
-        chunks = splitter.split_documents(raw_docs)
+    for i, file in enumerate(files):
+        ext = file.name.rsplit(".", 1)[-1].lower()
+        progress.progress(int((i / len(files)) * 40), text=f"Reading {file.name}…")
+        try:
+            if ext == "pdf":
+                raw_docs.extend(extract_pdf(file))
+            elif ext == "docx":
+                raw_docs.extend(extract_docx(file))
+            elif ext in ["png", "jpg", "jpeg"] and OCR_AVAILABLE:
+                raw_docs.extend(extract_image(file))
+        except Exception as e:
+            st.warning(f"Could not process **{file.name}**: {e}")
 
-        embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-        st.session_state.db = FAISS.from_documents(chunks, embeddings)
+    if not raw_docs:
+        progress.empty()
+        st.error("No readable text found in the uploaded files.")
+        st.stop()
 
-    st.success(f"✅ Indexed {len(chunks)} chunks from {len(files)} file(s).")
+    progress.progress(50, text="Splitting into chunks…")
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=150,
+        separators=["\n\n", "\n", ". ", "? ", "! ", " "]
+    )
+    chunks = splitter.split_documents(raw_docs)
+
+    progress.progress(70, text="Loading embedding model…")
+    embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+
+    progress.progress(85, text="Building search index…")
+    st.session_state.db = FAISS.from_documents(chunks, embeddings)
+
+    progress.progress(100, text="Done!")
+    progress.empty()
+    st.success(f"✅ Ready! Indexed {len(chunks)} chunks from {len(files)} file(s).")
 
 # ── Main area ──
 if not files:
@@ -308,23 +271,27 @@ if not files:
     </div>
     """, unsafe_allow_html=True)
 else:
-    query = st.text_input("Ask a question from your documents", placeholder="e.g. What is the main topic of the document?")
+    query = st.text_input(
+        "Ask a question from your documents",
+        placeholder="e.g. What is the main topic of the document?"
+    )
 
     if query and st.session_state.db:
         results = st.session_state.db.similarity_search(query, k=top_k)
-        st.markdown(f"<hr>", unsafe_allow_html=True)
+        st.markdown("<hr>", unsafe_allow_html=True)
 
         if not results:
             st.warning("No relevant content found. Try rephrasing your question.")
         else:
             for i, res in enumerate(results, 1):
-                # Clean and trim text
                 sentences = re.split(r'(?<=[.!?])\s+', res.page_content.strip())
                 answer = " ".join(sentences[:6])
                 answer = highlight_query(answer, query)
 
                 src = res.metadata.get("source", "")
-                src_tag = f'<span style="float:right;color:#4b3880;font-size:0.75rem;">{src}</span>' if src else ""
+                page = res.metadata.get("page", "")
+                src_info = f"{src} · p.{page}" if page else src
+                src_tag = f'<span style="float:right;color:#4b3880;font-size:0.75rem;">{src_info}</span>' if src_info else ""
 
                 st.markdown(f"""
                 <div class="answer-card" style="animation-delay:{(i-1)*0.08}s">
