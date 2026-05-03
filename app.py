@@ -1,7 +1,13 @@
 import streamlit as st
 import re
 import io
+import warnings
+import logging
 from groq import Groq
+
+# Suppress pypdf warnings about malformed PDFs
+warnings.filterwarnings("ignore")
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 from langchain_core.documents import Document as LCDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -551,16 +557,23 @@ except Exception:
 
 # ── Extractors ──
 def extract_pdf(file):
-    reader = PdfReader(io.BytesIO(file.read()))
-    docs = []
-    for i, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        if text.strip():
-            docs.append(LCDocument(
-                page_content=text,
-                metadata={"source": file.name, "page": i + 1}
-            ))
-    return docs
+    try:
+        reader = PdfReader(io.BytesIO(file.read()), strict=False)
+        docs = []
+        for i, page in enumerate(reader.pages):
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                text = ""
+            if text.strip():
+                docs.append(LCDocument(
+                    page_content=text,
+                    metadata={"source": file.name, "page": i + 1}
+                ))
+        return docs
+    except Exception as e:
+        st.warning(f"PDF read issue in {file.name}: {e} — trying partial read.")
+        return []
 
 def extract_docx(file):
     doc = Document(file)
