@@ -518,10 +518,15 @@ with st.sidebar:
     st.divider()
     st.markdown("### 🤖 Model")
     model_choice = st.selectbox("LLM Model", [
+        # ── Production (stable) ──
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        # ── Preview (latest) ──
+        "meta-llama/llama-4-maverick-17b-128e-instruct",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "qwen/qwen-3-32b",
     ], label_visibility="collapsed")
 
     st.divider()
