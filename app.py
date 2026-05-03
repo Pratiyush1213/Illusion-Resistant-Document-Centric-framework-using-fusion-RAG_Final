@@ -7,6 +7,7 @@ from langchain_core.documents import Document as LCDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from docx import Document
 
@@ -293,10 +294,7 @@ if files and st.session_state.db is None:
         )
         chunks = splitter.split_documents(raw_docs)
 
-        embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"}
-        )
+        embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
         st.session_state.db = FAISS.from_documents(chunks, embeddings)
 
     st.success(f"✅ Indexed {len(chunks)} chunks from {len(files)} file(s).")
